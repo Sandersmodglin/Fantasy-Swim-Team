@@ -1,0 +1,217 @@
+// ...all imports remain unchanged
+import { useState, useEffect } from "react";
+import { Input } from "@/components/ui/input";
+import { auth } from "@/lib/firebase";
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
+import { db } from "@/lib/firebase";
+import {
+  collection,
+  onSnapshot,
+  setDoc,
+  doc,
+  getDocs,
+  getDoc,
+  addDoc,
+  query,
+  where,
+  updateDoc,
+} from "firebase/firestore";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { motion } from "framer-motion";
+import Image from "next/image";
+
+export default function Home() {
+  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterDrafter, setFilterDrafter] = useState("");
+  const [sampleSwimmers, setSampleSwimmers] = useState([]);
+  const [leagueMembers, setLeagueMembers] = useState([]);
+  const [draftOrder, setDraftOrder] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [draftedSwimmers, setDraftedSwimmers] = useState([]);
+  const [joinedLeague, setJoinedLeague] = useState(false);
+  const [leagueName, setLeagueName] = useState("");
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubSwimmers = onSnapshot(collection(db, "swimmers"), (snapshot) => {
+      setSampleSwimmers(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+    });
+    const unsubMembers = onSnapshot(collection(db, "leagueMembers"), (snapshot) => {
+      setLeagueMembers(snapshot.docs.map((doc) => doc.data().name));
+    });
+    const unsubDraftOrder = onSnapshot(doc(db, "draftOrder", "order"), (docSnap) => {
+      const data = docSnap.data();
+      setDraftOrder(data?.uids || []);
+    });
+    const unsubLeaderboard = onSnapshot(collection(db, "leaderboard"), (snapshot) => {
+      setLeaderboard(snapshot.docs.map((doc) => doc.data()));
+    });
+    const unsubDrafted = onSnapshot(collection(db, "draftedSwimmers"), (snapshot) => {
+      setDraftedSwimmers(snapshot.docs.map((doc) => doc.data()));
+    });
+    return () => {
+      unsubSwimmers();
+      unsubMembers();
+      unsubDraftOrder();
+      unsubLeaderboard();
+      unsubDrafted();
+    };
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      for (const swimmer of draftedSwimmers) {
+        const newPoints = Math.floor(Math.random() * 20);
+        const swimmerRef = query(collection(db, "draftedSwimmers"), where("name", "==", swimmer.name));
+        const snap = await getDocs(swimmerRef);
+        snap.forEach(async (docItem) => {
+          const existingPoints = docItem.data().totalPoints || 0;
+          await updateDoc(doc(db, "draftedSwimmers", docItem.id), {
+            totalPoints: existingPoints + newPoints,
+          });
+        });
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [draftedSwimmers]);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (error) {
+      console.error("Login error:", error);
+    }
+  };
+
+  const handleSignUp = async () => {
+    try {
+      await createUserWithEmailAndPassword(auth, email, password);
+    } catch (error) {
+      console.error("Sign up error:", error);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+  };
+
+  const handleCreateLeague = async () => {
+    if (!user || !leagueName) return;
+    try {
+      await setDoc(doc(db, "leagues", leagueName), { name: leagueName });
+      await addDoc(collection(db, "leagueMembers"), { uid: user.uid, name: user.email });
+      const orderDocRef = doc(db, "draftOrder", "order");
+      const orderSnap = await getDoc(orderDocRef);
+      const currentOrder = orderSnap.exists() ? orderSnap.data().uids : [];
+      await setDoc(orderDocRef, { uids: [...currentOrder, user.uid] });
+      setJoinedLeague(true);
+    } catch (error) {
+      console.error("Error creating league:", error);
+    }
+  };
+
+  const handleJoinLeague = async () => {
+    if (!user || !leagueName) return;
+    try {
+      const leagueRef = query(collection(db, "leagues"), where("name", "==", leagueName));
+      const leagueSnapshot = await getDocs(leagueRef);
+      if (!leagueSnapshot.empty) {
+        await addDoc(collection(db, "leagueMembers"), { uid: user.uid, name: user.email });
+        const orderDocRef = doc(db, "draftOrder", "order");
+        const orderSnap = await getDoc(orderDocRef);
+        const currentOrder = orderSnap.exists() ? orderSnap.data().uids : [];
+        await setDoc(orderDocRef, { uids: [...currentOrder, user.uid] });
+        setJoinedLeague(true);
+      } else {
+        alert("League not found");
+      }
+    } catch (error) {
+      console.error("Error joining league:", error);
+    }
+  };
+
+  const isUserTurn = draftOrder[0] === user?.uid;
+
+  const handleDraft = async (swimmer) => {
+    if (!user || !isUserTurn) return;
+    try {
+      await addDoc(collection(db, "draftedSwimmers"), {
+        ...swimmer,
+        draftedBy: user.uid,
+        totalPoints: 0,
+      });
+      const newOrder = [...draftOrder.slice(1), draftOrder[0]];
+      await setDoc(doc(db, "draftOrder", "order"), { uids: newOrder });
+    } catch (error) {
+      console.error("Error drafting swimmer:", error);
+    }
+  };
+
+  const filteredSwimmers = draftedSwimmers
+    .filter((s) => {
+      const drafter = leagueMembers[draftOrder.indexOf(s.draftedBy)] || s.draftedBy;
+      return (
+        s.name.toLowerCase().includes(searchTerm.toLowerCase()) &&
+        (filterDrafter === "" || drafter === filterDrafter)
+      );
+    })
+    .sort((a, b) => b.totalPoints - a.totalPoints);
+
+  return (
+    <div className="p-4 space-y-6 bg-[url('/pool-bg.jpg')] bg-cover min-h-screen">
+      {/* Hero Section */}
+      <motion.div
+        className="text-center py-12 bg-blue-100 bg-opacity-80 rounded-xl"
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8 }}
+      >
+        <div className="flex justify-center mb-4">
+          <Image src="/logo.png" alt="Fantasy Swim Logo" width={80} height={80} />
+        </div>
+        <h1 className="text-4xl font-bold">Fantasy Swimming Leagues</h1>
+        <p className="mt-2 text-lg">Draft real college swimmers. Track live stats. Compete with friends.</p>
+        {!user && (
+          <div className="mt-4">
+            <Input
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="mb-2"
+            />
+            <Input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mb-2"
+            />
+            <div className="flex justify-center gap-2">
+              <Button onClick={handleLogin}>Login</Button>
+              <Button onClick={handleSignUp}>Sign Up</Button>
+            </div>
+          </div>
+        )}
+      </motion.div>
+
+      {/* Keep rest of sections the same or animate them as desired */}
+      {/* You can wrap each section in <motion.div> for similar effects */}
