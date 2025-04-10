@@ -1,4 +1,4 @@
-// ...all imports remain unchanged
+e5924f1e552f3bbdfdeb4f0bf42e2752765cf026// ...all imports remain unchanged
 import { useState, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { auth } from "@/lib/firebase";
